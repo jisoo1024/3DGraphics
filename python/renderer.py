@@ -2,6 +2,7 @@
 GPU skinning, fog, and AABB debug lines."""
 import ctypes
 import io
+import logging
 
 import numpy as np
 import pygame
@@ -52,9 +53,12 @@ uniform vec4 u_color;
 uniform vec3 u_sun_dir, u_sun_color, u_sky, u_ground, u_eye, u_fog;
 uniform float u_fog_density;
 uniform vec3 u_highlight;      // selection glow color, zero when not selected
+uniform bool u_shadows;
+uniform float u_metallic, u_roughness;
 out vec4 frag;
 
 float shadow_factor(vec3 n) {
+    if (!u_shadows) return 1.0;
     vec3 p = v_light.xyz / v_light.w * 0.5 + 0.5;
     if (p.z > 1.0) return 1.0;
     float bias = max(0.0015 * (1.0 - dot(n, -u_sun_dir)), 0.0004);
@@ -76,7 +80,10 @@ void main() {
     float sh = shadow_factor(n);
     vec3 ambient = mix(u_ground, u_sky, n.y * 0.5 + 0.5) * albedo;
     vec3 diffuse = max(dot(n, l), 0.0) * u_sun_color * albedo;
-    vec3 spec = pow(max(dot(n, h), 0.0), 48.0) * 0.12 * u_sun_color;
+    float gloss = mix(128.0, 4.0, clamp(u_roughness, 0.0, 1.0));
+    vec3 spec_color = mix(vec3(0.12), albedo, clamp(u_metallic, 0.0, 1.0));
+    vec3 spec = pow(max(dot(n, h), 0.0), gloss) * spec_color * u_sun_color;
+    diffuse *= 1.0 - clamp(u_metallic, 0.0, 1.0) * 0.75;
     vec3 c = ambient + sh * (diffuse + spec);
     float rim = pow(1.0 - max(dot(n, v), 0.0), 2.0);       // bright edges facing away from us
     c += u_highlight * (0.25 + 1.5 * rim);
@@ -173,6 +180,8 @@ class Renderer:
         self.ground_ambient = np.array([0.30, 0.27, 0.22])
         self.fog = np.array([0.72, 0.84, 0.97])
         self.fog_density = 0.012
+        self.shadows_enabled = True
+        self.materials_enabled = False  # preserve the original town's lighting
 
     def set_environment(self, sun):
         d = np.array(sun.get("direction", self.sun_dir), float)
@@ -202,7 +211,12 @@ class Renderer:
         kind, src = image
         key = src if kind == "file" else id(src)
         if key not in self.textures:
-            surf = pygame.image.load(src if kind == "file" else io.BytesIO(src))
+            try:
+                surf = pygame.image.load(src if kind == "file" else io.BytesIO(src))
+            except (OSError, pygame.error, ValueError) as error:
+                logging.warning("Texture unavailable (%s): %s", kind, error)
+                self.textures[key] = self.white
+                return self.white
             w, h = surf.get_size()
             rgba = np.frombuffer(pygame.image.tobytes(surf, "RGBA", False), np.uint8).reshape(h, w, 4)
             self.textures[key] = self._texture_from_rgba(rgba)
@@ -234,7 +248,8 @@ class Renderer:
                 glBindVertexArray(0)
                 mat = model.materials[pr.material]
                 pr.gpu = {"vao": vao, "count": len(pr.indices), "tex": self.texture(mat["image"]),
-                          "color": mat["color"]}
+                          "color": mat["color"], "metallic": mat.get("metallic", 0),
+                          "roughness": mat.get("roughness", 0.45)}
 
     def _make_shadow_map(self):
         self.shadow_tex = glGenTextures(1)
@@ -286,7 +301,9 @@ class Renderer:
                     g = pr.gpu
                     if prog is self.main:
                         glBindTexture(GL_TEXTURE_2D, g["tex"])
-                        prog.vec4("u_color", g["color"])
+                        prog.vec4("u_color", g["color"] * getattr(inst, "tint", np.ones(4)))
+                        prog.f("u_metallic", g.get("metallic", 0) if self.materials_enabled else 0)
+                        prog.f("u_roughness", g.get("roughness", 0.45) if self.materials_enabled else 80 / 124)
                     glBindVertexArray(g["vao"])
                     glDrawElements(GL_TRIANGLES, g["count"], GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
@@ -305,7 +322,8 @@ class Renderer:
         p.mat4("u_view", light_vp)
         p.mat4("u_proj", np.eye(4))
         p.mat4("u_light_vp", np.eye(4))
-        self._draw_instances(p, instances)
+        if self.shadows_enabled:
+            self._draw_instances(p, instances)
         glDisable(GL_POLYGON_OFFSET_FILL)
         glEnable(GL_CULL_FACE)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -333,6 +351,7 @@ class Renderer:
         p.f("u_fog_density", fog_density)
         p.i("u_tex", 0)
         p.i("u_shadow", 1)
+        p.i("u_shadows", int(self.shadows_enabled))
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D, self.shadow_tex)
         glActiveTexture(GL_TEXTURE0)

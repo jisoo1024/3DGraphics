@@ -3,7 +3,7 @@
 Reads only what the Kenney kits use:
   - node hierarchy (TRS or matrix)
   - meshes with POSITION, NORMAL, TEXCOORD_0, JOINTS_0, WEIGHTS_0
-  - materials: baseColorFactor and baseColorTexture
+  - materials: baseColorFactor, baseColorTexture, metallicFactor, roughnessFactor
   - skins (inverse bind matrices)
   - animations (translation, rotation, scale; LINEAR and STEP)
 
@@ -148,6 +148,8 @@ class Model:
             mat = {"name": m.get("name", ""),
                    "color": np.array(pbr.get("baseColorFactor", [1, 1, 1, 1]), np.float32),
                    "image": None}
+            mat["metallic"] = float(pbr.get("metallicFactor", 1.0))
+            mat["roughness"] = float(pbr.get("roughnessFactor", 1.0))
             tex = pbr.get("baseColorTexture")
             if tex is not None:
                 img = self.json["images"][self.json["textures"][tex["index"]]["source"]]

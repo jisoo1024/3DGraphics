@@ -1,119 +1,25 @@
-"""3D Forest of Patience: primitive-only platforming scene.
-
-Run: uv run python -m platformer (from python/). The original main.py is unchanged.
-"""
+"""3D Forest of Patience. From python/: uv run python -m platformer."""
 import argparse
+import logging
+from pathlib import Path
 
 import numpy as np
 import pygame
-from OpenGL.GL import *  # noqa: F401,F403 -- same convention as renderer.py
+from OpenGL.GL import GL_RGB, GL_UNSIGNED_BYTE, glReadPixels
 
-from camera import FollowCamera
-from .controller import MovementSettings, PlatformerController
+from renderer import Renderer
+from .audio import Audio
+from .autoplay import CoursePilot
+from .camera import GameCamera
 from .input import MouseLook
-from .level import BOXES, HAZARDS, SPAWN
-from renderer import Program, Renderer
-from scene import Instance, PlaneModel, srgb_hex_to_linear
-
-
-class BoxModel(PlaneModel):
-    """Procedural flat-shaded box compatible with the existing glTF renderer."""
-
-    def __init__(self, size, color):
-        super().__init__(1, srgb_hex_to_linear(color))
-        self.name = "primitive-box"
-        half = np.asarray(size, float) / 2
-        vertices, normals, indices = [], [], []
-        for axis in range(3):
-            u, v = (axis + 1) % 3, (axis + 2) % 3
-            for sign in (-1, 1):
-                normal = np.zeros(3)
-                normal[axis] = sign
-                start = len(vertices)
-                for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
-                    p = np.zeros(3)
-                    p[axis], p[u], p[v] = sign, a, b * sign
-                    vertices.append(p * half)
-                    normals.append(normal)
-                indices.extend(start + i for i in (0, 1, 2, 0, 2, 3))
-        pr = self.meshes[0][0]
-        pr.position = np.asarray(vertices, np.float32)
-        pr.normal = np.asarray(normals, np.float32)
-        pr.uv = np.zeros((24, 2), np.float32)
-        pr.indices = np.asarray(indices, np.uint32)
-        self.bounds = (-half, half)
-
-
-class PlayerVisual:
-    """Render-only adapter. Replace instances with a GLB without changing physics.
-
-    A future GLB should use a feet-centred origin and a suitable visual scale.
-    The controller remains an axis-aligned box even if the model rotates.
-    """
-
-    def __init__(self, settings):
-        self.settings = settings
-        self.body = Instance(BoxModel((settings.half_width * 2,
-                                       settings.height, settings.half_width * 2), "#f2d685"))
-        self.face = Instance(BoxModel((0.35, 0.18, 0.025), "#35474f"))
-        self.instances = [self.body, self.face]
-
-    def sync(self, controller):
-        self.body.pos[:] = controller.pos + (0, self.settings.height / 2, 0)
-        self.face.pos[:] = controller.pos + (0, self.settings.height * 0.78,
-                                            self.settings.half_width + 0.016)
-
-
-class HUD:
-    """Pygame font surface uploaded to a small OpenGL overlay texture."""
-
-    def __init__(self, renderer):
-        self.font = pygame.font.Font(None, 25)
-        self.surface = pygame.Surface((760, 188), pygame.SRCALPHA)
-        self.program = Program("""#version 330 core
-out vec2 uv;
-void main() {
-    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
-    uv = p; gl_Position = vec4(p * 2.0 - 1.0, 0, 1);
-}""", """#version 330 core
-in vec2 uv; out vec4 frag; uniform sampler2D text_tex;
-void main() { frag = texture(text_tex, vec2(uv.x, 1.0 - uv.y)); }
-""")
-        self.vao = glGenVertexArrays(1)
-        self.texture = renderer._texture_from_rgba(
-            np.zeros((188, 760, 4), np.uint8))
-
-    def draw(self, player, fps, width, height, mouse_look):
-        self.surface.fill((21, 33, 36, 230))
-        lines = ["3D FOREST OF PATIENCE | WASD: move  Space: jump  Esc: quit",
-                 "Mouse: look  Tab: release/capture cursor  Wheel: zoom  B: boxes",
-                 f"Grounded: {player.grounded}    Vertical speed: {player.velocity[1]:+.2f} m/s",
-                 f"Feet Y: {player.pos[1]:.2f}    Resets: {player.respawn_count}    FPS: {fps:.0f}",
-                 f"Hits: {player.hit_count}   Protection: {player.invulnerability_left:.1f}s   "
-                 + ("Mouse captured" if mouse_look.captured else "Click to capture mouse"),
-                 (f"HIT: {player.last_hit} - knocked back!"
-                  if player.invulnerability_left > 0 else
-                  "Pink: moving hazards (touch = knockback)  |  Blue: head test")]
-        for i, line in enumerate(lines):
-            self.surface.blit(self.font.render(line, True, (240, 244, 225)), (12, 10 + i * 28))
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, self.texture)
-        data = pygame.image.tobytes(self.surface, "RGBA")
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 760, 188, GL_RGBA, GL_UNSIGNED_BYTE, data)
-        glViewport(12, height - 200, 760, 188)
-        glDisable(GL_DEPTH_TEST)
-        glDisable(GL_CULL_FACE)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glUseProgram(self.program.id)
-        self.program.i("text_tex", 0)
-        glBindVertexArray(self.vao)
-        glDrawArrays(GL_TRIANGLES, 0, 3)
-        glBindVertexArray(0)
-        glDisable(GL_BLEND)
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_CULL_FACE)
-        glViewport(0, 0, width, height)
+from .progress import Screen
+from .resources import Resources
+from .save import SaveStore
+from .session import Session
+from .stages import STAGES
+from .ui import UI
+from .visuals import StageVisual
+from .world import StageWorld
 
 
 def run(args):
@@ -123,94 +29,170 @@ def run(args):
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
-    flags = pygame.OPENGL | pygame.DOUBLEBUF
-    if args.hidden:
-        flags |= pygame.HIDDEN
+    flags = pygame.OPENGL | pygame.DOUBLEBUF | (pygame.HIDDEN if args.hidden else 0)
     pygame.display.set_mode((width, height), flags)
-    pygame.display.set_caption("3D 인내의 숲 — 이동·점프 테스트")
-    pygame.key.set_repeat()  # KEYDOWN only on press, not operating-system repeat
+    pygame.display.set_caption("3D 인내의 숲")
+    pygame.key.set_repeat()
     renderer = Renderer(width, height)
-    settings = MovementSettings()  # All movement tuning lives in this dataclass.
-    player = PlatformerController(BOXES, SPAWN, settings, hazards=HAZARDS)
-    visual = PlayerVisual(settings)
-    scene = []
-    for box in BOXES:
-        lo, hi = np.array(box.lo), np.array(box.hi)
-        scene.append(Instance(BoxModel(hi - lo, box.color), (lo + hi) / 2))
-    hazard_instances = [Instance(BoxModel(h.size, h.color), h.position(0)) for h in HAZARDS]
-    instances = scene + hazard_instances + visual.instances
-    for inst in instances:
-        renderer.upload(inst.model)
-    camera = FollowCamera(yaw=0.18, pitch=0.62, dist=13)
-    camera.target[:] = player.pos + (0, 1, -2)
-    mouse_look = MouseLook(camera, capture=not args.hidden)
-    hud = HUD(renderer)
+    renderer.materials_enabled = True
+    renderer.fog = np.array((0.53, 0.72, 0.66))
+    resources = Resources(renderer, args.resources)
+    session = Session(SaveStore(args.save))
+    camera = GameCamera()
+    mouse = MouseLook(camera, capture=False)
+    ui = UI(renderer, width, height)
+    audio = Audio(Path(args.resources) / "audio/platformer" if args.resources else None)
+    preview = StageWorld(STAGES[0])
+    view_world = preview
+    visual = StageVisual(resources, preview)
+    camera.target[:] = preview.player.pos + (0, 0.9, 0)
     clock = pygame.time.Clock()
-    running, show_boxes, jump_held = True, False, False
-    frames = 0
-    while running:
-        dt = clock.tick(args.fps) / 1000
-        for event in pygame.event.get():
-            mouse_look.handle(event)
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+    running, debug = True, args.debug
+    frames, scene_key, previous_screen = 0, None, None
+    pilot = CoursePilot() if args.autoplay else None
+    if args.play or pilot:
+        session.start()
+    elif args.screen == "paused":
+        session.start()
+        session.progress.pause()
+    elif args.screen != "lobby":
+        session.action(args.screen)
+    try:
+        while running:
+            dt = clock.tick(args.fps) / 1000
+            if pilot:
+                dt = 1 / 30  # reproducible simulation, independent of GPU speed
+            for event in pygame.event.get():
+                screen = session.progress.screen
+                if event.type == pygame.QUIT:
                     running = False
-                elif event.key == pygame.K_b:
-                    show_boxes = not show_boxes
-                elif event.key == pygame.K_SPACE:
-                    jump_held = True
-                    player.set_jump_held(True)
-            elif event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
-                jump_held = False
-                player.set_jump_held(False)
-            elif event.type == pygame.WINDOWFOCUSLOST:
-                jump_held = False
-                player.set_jump_held(False)
-        if not running:
-            break
-        keys = pygame.key.get_pressed()
-        forward = camera.forward_xz()
-        right = np.array([-forward[2], 0, forward[0]])
-        move = forward * (int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
-        move += right * (int(keys[pygame.K_d]) - int(keys[pygame.K_a]))
-        player.set_jump_held(jump_held)
-        if mouse_look.focused:
-            player.advance(dt, move[[0, 2]])
-        visual.sync(player)
-        for hazard, inst in zip(HAZARDS, hazard_instances):
-            inst.pos[:] = hazard.position(player.simulation_time)
-        # Blink during hit protection, leaving collision/debug volumes stable.
-        blink_off = player.invulnerability_left > 0 and int(player.simulation_time * 12) % 2
-        drawn = scene + hazard_instances + ([] if blink_off else visual.instances)
-        camera.follow(player.pos + (0, 0, -2), dt, height=1)
-        view, proj = camera.view(), camera.proj(width / height)
-        renderer.render(drawn, view, proj, camera.eye, player.pos)
-        if show_boxes:
-            renderer.draw_boxes([(np.array(b.lo), np.array(b.hi)) for b in BOXES]
-                                + [h.bounds(player.simulation_time) for h in HAZARDS]
-                                + [player.bounds()], view, proj)
-        hud.draw(player, clock.get_fps(), width, height, mouse_look)
-        frames += 1
-        if args.frames and frames >= args.frames:
-            if args.screenshot:
-                pixels = glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE)
-                image = pygame.image.frombytes(pixels, (width, height), "RGB", True)
-                pygame.image.save(image, args.screenshot)
-            running = False
-        pygame.display.flip()
-    mouse_look.set_capture(False)
-    print(f"Rendered {frames} frames; grounded={player.grounded}; "
-          f"y={player.pos[1]:.3f}; hits={player.hit_count}")
+                elif event.type == pygame.WINDOWFOCUSLOST:
+                    mouse.handle(event)
+                    session.progress.pause()
+                    if session.world:
+                        session.world.player.set_jump_held(False)
+                        session.world.player._jump_pending = False
+                elif event.type == pygame.WINDOWFOCUSGAINED:
+                    mouse.handle(event)
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    if screen == Screen.PLAYING:
+                        session.progress.pause()
+                    elif screen == Screen.PAUSED:
+                        session.progress.resume()
+                    elif screen in (Screen.SETTINGS, Screen.SHOP, Screen.HELP):
+                        session.action("back")
+                    elif screen == Screen.RESULTS:
+                        session.lobby()
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_F3:
+                    debug = not debug
+                elif screen == Screen.PLAYING:
+                    mouse.handle(event)
+                    player = session.world.player
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_SPACE:
+                            player.set_jump_held(True)
+                        elif event.key == pygame.K_e:
+                            session.world.grab_rope()
+                    elif event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
+                        player.set_jump_held(False)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    action = ui.click(event.pos)
+                    if action == "quit":
+                        running = False
+                    elif action:
+                        old_meso = session.profile["meso"]
+                        session.action(action)
+                        if session.profile["meso"] < old_meso:
+                            audio.play("purchase")
+            if not running:
+                break
+            screen = session.progress.screen
+            if screen != previous_screen:
+                if screen == Screen.PLAYING:
+                    mouse.set_capture(not args.hidden)
+                else:
+                    mouse.set_capture(False)
+                if session.world:
+                    session.world.player.set_jump_held(False)
+                    session.world.player._jump_pending = False
+                previous_screen = screen
+            options = session.profile["options"]
+            camera.sensitivity = options["sensitivity"]
+            renderer.shadows_enabled = options["shadows"]
+            audio.volumes(options)
+            music_key = f"stage{session.progress.stage_index + 1}" if session.progress.active else "lobby"
+            if music_key != scene_key:
+                audio.music(music_key)
+                scene_key = music_key
+            audio.pause(screen in (Screen.PAUSED, Screen.SETTINGS, Screen.HELP) and session.progress.active)
+            keys = pygame.key.get_pressed()
+            forward = camera.forward_xz()
+            right = np.array((-forward[2], 0, forward[0]))
+            movement = forward * (int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
+            movement += right * (int(keys[pygame.K_d]) - int(keys[pygame.K_a]))
+            move = pilot.controls(session.world) if pilot and screen == Screen.PLAYING else movement[[0, 2]]
+            session.update(dt, move, int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
+            screen = session.progress.screen
+            next_music = f"stage{session.progress.stage_index + 1}" if session.progress.active else "lobby"
+            if next_music != scene_key:
+                audio.music(next_music)
+                scene_key = next_music
+            desired_world = session.world if session.world is not None else preview
+            if desired_world is not view_world:
+                view_world = desired_world
+                visual = StageVisual(resources, view_world)
+                camera.target[:] = view_world.player.pos + (0, 0.9, 0)
+                camera.yaw = 0
+            if screen == Screen.RESULTS and previous_screen != Screen.RESULTS:
+                audio.play("clear")
+            for name in view_world.events:
+                audio.play(name)
+            view_world.events.clear()
+            camera.boxes = view_world.stage.boxes
+            if screen == Screen.PLAYING:
+                camera.follow(view_world.player.pos, dt, height=0.9)
+            drawn = visual.sync(dt if screen == Screen.PLAYING else 0, session.profile)
+            view, proj = camera.view(), camera.proj(width / height)
+            p = view_world.player
+            selected = visual.player.body if p.invulnerability_left > 0 else None
+            renderer.render(drawn, view, proj, camera.eye, p.pos, selected=selected)
+            if p.invulnerability_left > 0 and int(view_world.time * 10) % 2 == 0:
+                lo, hi = p.bounds()
+                renderer.draw_boxes([(lo - 0.05, hi + 0.05)], view, proj, color=(1, 0.9, 0.45))
+            if debug:
+                renderer.draw_boxes([(np.array(b.lo), np.array(b.hi)) for b in view_world.stage.boxes]
+                                    + [p.bounds()], view, proj)
+            ui.draw(session, view_world, clock.get_fps(), debug)
+            frames += 1
+            if (args.frames and frames >= args.frames) or (pilot and screen == Screen.RESULTS):
+                if args.screenshot:
+                    pixels = glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE)
+                    Path(args.screenshot).parent.mkdir(parents=True, exist_ok=True)
+                    pygame.image.save(pygame.image.frombytes(pixels, (width, height), "RGB", True), args.screenshot)
+                running = False
+            pygame.display.flip()
+        print(f"Rendered {frames} frames; screen={session.progress.screen.value}; "
+              f"stage={session.progress.stage_index + 1}; time={session.progress.elapsed:.3f}")
+    finally:
+        mouse.set_capture(False)
+        session.save()
+        audio.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fps", type=int, default=60, help="Render cap; try 5 to test slow frames")
-    parser.add_argument("--frames", type=int, default=0, help="Exit after N frames (0: interactive)")
-    parser.add_argument("--hidden", action="store_true", help="Hidden window for rendering smoke test")
-    parser.add_argument("--screenshot", help="Save last frame when --frames is used")
+    parser.add_argument("--fps", type=int, default=60)
+    parser.add_argument("--frames", type=int, default=0)
+    parser.add_argument("--hidden", action="store_true")
+    parser.add_argument("--screenshot")
+    parser.add_argument("--save", help="Override save file path")
+    parser.add_argument("--resources", help="Override assets root; an empty directory tests fallback art/audio")
+    parser.add_argument("--play", action="store_true", help="Start challenge immediately")
+    parser.add_argument("--screen", choices=("lobby", "shop", "settings", "help", "paused"), default="lobby",
+                        help="Open a menu for rendering verification")
+    parser.add_argument("--autoplay", action="store_true", help="Verify both courses with scripted movement inputs")
+    parser.add_argument("--debug", action="store_true")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     try:
         run(parser.parse_args())
     finally:

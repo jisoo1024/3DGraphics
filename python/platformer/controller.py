@@ -73,6 +73,9 @@ class PlatformerController:
         self.invulnerability_left = 0.0
         self.last_hit = None
         self.knockback_left = 0.0
+        self.rope = None
+        self.climb_input = 0.0
+        self.events = []
         self.grounded = self._supported()
 
     def bounds(self):
@@ -95,7 +98,7 @@ class PlatformerController:
         Airborne presses are discarded, never buffered until landing. A held
         button stays latched across respawn until released.
         """
-        if held and not self._jump_down and self.grounded:
+        if held and not self._jump_down and (self.grounded or self.rope is not None):
             self._jump_pending = True
         self._jump_down = bool(held)
 
@@ -106,7 +109,46 @@ class PlatformerController:
         self._jump_pending = False
         self._accumulator = 0.0
         self.knockback_left = 0.0
+        self.invulnerability_left = 0.0
+        self.last_hit = None
+        self.rope = None
+        self.climb_input = 0.0
+        self.events.append("respawn")
         self.respawn_count += 1
+
+    @property
+    def state(self):
+        if self.rope is not None:
+            return "rope"
+        if self.knockback_left > self.EPS:
+            return "stunned"
+        return "grounded" if self.grounded else "airborne"
+
+    def damage(self, origin, name="장애물", upward=0.0):
+        if self.invulnerability_left > self.EPS:
+            return False
+        away = (self.pos - np.asarray(origin))[[0, 2]]
+        if np.linalg.norm(away) <= self.EPS:
+            away = -self.velocity[[0, 2]]
+        if np.linalg.norm(away) <= self.EPS:
+            away = np.array((0.0, 1.0))
+        self._apply_hit(away, name, upward)
+        return True
+
+    def _apply_hit(self, away, name, upward=0.0):
+        s = self.settings
+        self.hit_count += 1
+        self.last_hit = name
+        self.invulnerability_left = s.hit_invulnerability
+        self.knockback_left = s.knockback_duration
+        self.rope = None
+        if s.knockback_duration > 0:
+            self.velocity[[0, 2]] = away / np.linalg.norm(away) * s.knockback_speed
+        if upward > 0:
+            self.velocity[1] = upward
+            self.grounded = False
+        self._jump_pending = False
+        self.events.append("hit")
 
     def _take_hit(self, hazard, before, start_time):
         # Use the side from which contact began, even when a fast obstacle has
@@ -119,14 +161,7 @@ class PlatformerController:
             away = -self.velocity[[0, 2]]
         if np.linalg.norm(away) <= self.EPS:
             away = np.array((0.0, 1.0))
-        s = self.settings
-        self.hit_count += 1
-        self.last_hit = hazard.name
-        self.invulnerability_left = s.hit_invulnerability
-        self.knockback_left = s.knockback_duration
-        if s.knockback_duration > 0:
-            self.velocity[[0, 2]] = away / np.linalg.norm(away) * s.knockback_speed
-        self._jump_pending = False
+        self._apply_hit(away, hazard.name)
         # Keep position, vertical velocity and support: being hit never teleports
         # or grants another jump. The next steps resolve knockback against walls.
 
@@ -184,6 +219,23 @@ class PlatformerController:
 
     def _step(self, dt, direction):
         s = self.settings
+        rope_jump = False
+        if self.rope is not None:
+            if self._jump_pending:
+                self.rope = None
+                self.velocity[1] = s.jump_speed
+                self._jump_pending = False
+                rope_jump = True
+                self.events.append("jump")
+            else:
+                from .config import DEFAULTS
+                delta = max(-1, min(1, self.climb_input)) * DEFAULTS.rope_speed * dt
+                y = np.clip(self.pos[1] + delta, self.rope.bottom, self.rope.top)
+                self._move_axis(1, y - self.pos[1])
+                self.velocity[:] = 0
+                self.grounded = False
+                return
+        was_grounded = self.grounded
         self.grounded = self.velocity[1] <= 0 and self._supported()
         knocked_back = self.knockback_left > self.EPS
         if knocked_back:
@@ -197,6 +249,7 @@ class PlatformerController:
         if self._jump_pending and self.grounded and not knocked_back:
             self.velocity[1] = s.jump_speed
             self.grounded = False
+            self.events.append("jump")
         self._jump_pending = False
 
         self._move_axis(0, self.velocity[0] * dt)
@@ -206,4 +259,6 @@ class PlatformerController:
         self.velocity[1] -= s.gravity * dt
         hit = self._move_axis(1, dy)
         self.grounded = bool(hit and dy < 0)
+        if self.grounded and not was_grounded and not rope_jump:
+            self.events.append("land")
         # Side and ceiling hits never mark the character as grounded.

@@ -28,13 +28,15 @@ P3에서 3D 작품을 만들 때 출발점으로 쓰는 팩입니다. 들어 있
 ```bash
 cd python
 uv sync          # 처음 한 번: pygame-ce, PyOpenGL, numpy 설치
-uv run main.py
+uv run python -m platformer
 ```
 
 ### 3D 인내의 숲 (플랫폼 게임)
 
-관련 코드·테스트·미리보기 이미지는 `python/platformer/`에 모았습니다.
-Python 트랙의 의존성과 공통 렌더러·카메라를 사용합니다.
+로비 → 1스테이지 → 2스테이지 → 결과 → 로비·상점으로 이어지는 싱글플레이 게임입니다.
+기존 **pygame-ce + PyOpenGL + NumPy** 엔진을 유지하며, Python 트랙의 공통 렌더러와
+GLB 로더를 재사용합니다. 외부 모델·텍스처·음원 없이 기본 도형과 생성 효과음으로 실행됩니다.
+기존 `main.py`의 마을 예제와 `web/` 트랙은 별도로 유지됩니다.
 
 ```powershell
 cd python
@@ -44,8 +46,158 @@ uv run python -m platformer
 uv run python -m unittest discover -s platformer -t . -v
 ```
 
-WASD 이동, Space 점프, 마우스 시점 회전, Tab 커서 해제·고정, Esc 종료.
-이동·점프·피격 설정은 `platformer/controller.py`, 발판·장애물 배치는 `platformer/level.py`에서 바꿉니다.
+Python 3.10 이상, OpenGL 3.3 지원 그래픽 환경이 필요합니다. 의존성은
+`python/pyproject.toml`의 `pygame-ce>=2.5`, `PyOpenGL>=3.1.7`, `numpy>=1.26`입니다.
+uv 없이 설치한다면 `python -m pip install pygame-ce PyOpenGL numpy` 후
+`python -m platformer`로 실행할 수 있습니다 (`python/` 폴더 기준).
+
+| 조작 | 동작 |
+|---|---|
+| WASD | 카메라 수평 방향 기준 이동, 대각선 속도 정규화 |
+| Space | 새 입력에 한 번 점프 / 로프에서 놓고 점프 |
+| 마우스·휠 | 3인칭 시점 회전·거리 조절, 지형에 맞춰 카메라 거리 보정 |
+| E | 가까운 로프 잡기 |
+| 로프에서 W/S | 오르내리기, 양 끝에서 정지 |
+| Esc | 일시정지·커서 해제 / 일시정지에서 재개 |
+| Tab·왼쪽 클릭 | 플레이 중 커서 해제·고정 / 다시 고정 |
+| F3 | FPS·접지·수직 속도·상태·충돌체 디버그 표시 |
+
+로비에는 도전·상점·조작법·설정·종료 버튼이 있습니다. 일시정지 화면에서도
+재개·로비 복귀·설정·종료를 선택할 수 있습니다. 다른 창으로 전환하면 자동으로 일시정지합니다.
+
+**코스와 게임 규칙**
+
+- 1스테이지는 넓은 발판과 원숭이·왕복 장애물을 사용하는 입문 코스입니다.
+- 2스테이지는 더 좁은 발판·원숭이·가시·로프를 조합합니다. 기본 점프만으로 통과하는
+  주 경로와 로프·가시 도약을 사용할 수 있는 옆쪽 경로가 있습니다.
+- 금빛 문 안에 착지하거나 걸어 들어가면 다음 스테이지 또는 결과 화면으로 넘어갑니다.
+- 원숭이 머리 위의 노란 표시는 공격 예고입니다. 바나나는 발사 시점의 목표를 향한 탄도로
+  움직이고, 지형 충돌·피격·수명 종료 시 제거됩니다. 동시에 최대 24개만 유지합니다.
+- 피격은 짧은 수평 넉백·기절과 1초 무적을 적용합니다. 무적 중 중복 피격은 막고
+  캐릭터 빛·깜박이는 외곽선으로 표시합니다. 가시는 더 큰 위쪽 충격을 추가합니다.
+- 낙하는 현재 스테이지 시작점으로 복귀하며 속도·피격·무적·로프 상태를 초기화합니다.
+  도전 시간은 계속 흐릅니다. 일시정지 중에는 시간·물리·투사체·음악을 함께 정지합니다.
+- 2스테이지 완료 시 기본 100메소에 시간 보너스를 더합니다. 보너스는
+  `max(0, 240 - 클리어 초) × 2`, 최대 총 보상은 600메소입니다. 도전 포기에는 보상이 없고
+  한 도전에는 한 번만 지급합니다. 빠른 기록은 최고 기록으로 저장합니다.
+- 상점의 모자 2개·색상 3개·등 장식 1개를 구매·장착·해제할 수 있습니다.
+  잔액 부족·중복 구매를 막으며 같은 슬롯에는 하나만 장착합니다. 능력치는 바뀌지 않습니다.
+
+**설정과 데이터 수정 위치**
+
+| 파일 | 책임 |
+|---|---|
+| `platformer/game.py` | 창·메인 루프·입력·장면 연결 |
+| `platformer/controller.py` | 이동·점프·고정 120Hz 물리·충돌·넉백·로프 상태 |
+| `platformer/stages.py` | 두 코스, 도착 구역, 원숭이 주기·속도·사거리·방향, 가시·로프 |
+| `platformer/level.py` | 기존 발판·왕복 장애물 데이터 (1스테이지 기반) |
+| `platformer/world.py`, `hazards.py` | 원숭이·투사체·가시·로프·연속 충돌 검사 |
+| `platformer/config.py` | 보상·투사체·가시 충격·로프 속도·기본 설정 |
+| `platformer/progress.py`, `session.py` | 화면·도전 시간·보상·장면 수명 관리 |
+| `platformer/inventory.py`, `save.py` | 치장·구매·장착·저장 검증 |
+| `platformer/visuals.py`, `geometry.py` | 충돌과 분리된 모델·치장·기본 도형 |
+| `platformer/resources.py`, `audio.py` | 모델·음원 로딩 및 대체 처리 |
+| `platformer/ui.py`, `camera.py`, `input.py` | 한글 UI·카메라 충돌·마우스 |
+
+기존 이동 테스트 장면은 `platformer/demo.py`에 보존했습니다.
+이동 속도·점프 높이·최고점 시간·공중 조작·복귀 높이·넉백은 `MovementSettings`에서 조절합니다.
+가시는 `config.py`의 `spike_impulse`, 로프는 `rope_speed`, 보상은 같은 파일의 `GameSettings`에서 조절합니다.
+발판의 최소·최대 좌표는 X=좌우, Y=높이, Z=앞뒤이며, 발판 윗면은 최대 Y입니다.
+기본 진행 방향은 -Z입니다. 코스를 수정하면 `stages.py`의 검증 경로 `route`도 함께 갱신하세요.
+
+**저장과 폰트**
+
+Windows 기본 저장 위치는 `%LOCALAPPDATA%/ForestOfPatience/save.json`, 그 밖의 환경은
+`~/.local/share/ForestOfPatience/save.json`입니다. 리소스 폴더와 분리되어 있습니다.
+버전·메소·보유·장착·최고 기록·BGM/SFX 볼륨·마우스 감도·그림자 설정을 저장합니다.
+임시 파일에 기록·flush/fsync 후 교체하며, 손상된 파일은 가능한 경우
+`save.corrupt-<시간>.json`으로 백업하고 기본값으로 시작합니다. UI에 복구·저장 실패 안내를 표시합니다.
+테스트용 저장은 `--save 경로`로 분리할 수 있습니다.
+
+한글은 `assets/font/Maplestory Light.ttf`를 본문에,
+`assets/font/Maplestory Bold.ttf`를 제목과 큰 글씨에 우선 사용합니다.
+메이플스토리 폰트가 없으면 Windows 맑은 고딕 또는 설치된 한글 시스템 폰트를 사용합니다.
+`assets/fonts/NotoSansKR-Regular.ttf`를 제공해도 됩니다. 한글 폰트를 찾지 못하면
+기본 폰트와 영문 메뉴·조작 안내로 전환합니다.
+
+**GLB 모델·재질 교체**
+
+`assets/platformer/models.example.json`을 `assets/platformer/models.json`으로 복사하면
+포함된 캐릭터·절벽·나무 모델을 연결할 수 있습니다. JSON의 경로는 `assets/models/` 기준입니다.
+사용 가능한 주요 역할은 `character`, `platform`, `monkey`, `banana`, `spike`, `rope`,
+`obstacle`, `tree`, `hat`, `back`입니다. 예:
+
+```json
+{
+  "character": "forest/character.glb",
+  "platform": "forest/platform.glb",
+  "monkey": "forest/monkey.glb",
+  "banana": "forest/banana.glb"
+}
+```
+
+Blender에서는 미터 단위, 적용된 회전·스케일, 캐릭터 발바닥 중앙 원점을 권장합니다.
+Blender의 Z-up 장면을 glTF 내보내기로 변환하고 게임 좌표는 Y-up, 캐릭터 전방은 +Z로 맞춥니다.
+glTF 2.0의 **GLB 형식**으로 내보내고 기본 색상용 PNG/JPEG를 포함하면 별도 변환 없이 읽습니다.
+외부 텍스처를 쓰면 GLB가 참조하는 상대 경로를 유지하세요. 모델은 지정한 시각 크기에 맞춰
+축별로 스케일하므로 원형 비율을 유지하려면 `visuals.py`의 지정 크기도 모델에 맞추세요.
+캐릭터의 `idle`, `walk`, `jump` 클립이 있으면 상태에 맞춰 재생합니다.
+
+기본 색상·텍스처와 금속성·거칠기 **상수 값**을 읽어 기존 Blinn–Phong 조명에 근사 적용합니다.
+방향광·환경광·그림자를 사용합니다. 완전한 PBR, 노멀맵·금속성/거칠기 텍스처,
+투명 재질, 압축 GLB 확장, morph target은 구현 범위에 포함하지 않습니다.
+스킨은 최대 32관절입니다. 모델 로딩 실패는 기본 도형으로, 누락된 텍스처는 흰 텍스처와
+기본 색상으로 대체하고 원인을 로그에 남깁니다. 시각 모델과 충돌체는 별개입니다.
+
+**음원 교체**
+
+아래 파일을 제공하면 사용합니다. 제공되지 않은 음원은 다운로드하지 않습니다.
+
+```text
+assets/audio/platformer/
+  lobby.ogg          # 로비 (같은 이름의 .wav/.mp3도 검색)
+  stage1.ogg         # 1스테이지
+  stage2.ogg         # 2스테이지
+  jump.wav          # 점프
+  land.wav          # 착지
+  hit.wav           # 피격
+  purchase.wav      # 구매
+  clear.wav         # 클리어
+  throw.wav         # 던지기
+  respawn.wav       # 낙하 복귀
+```
+
+`assets/sounds/WhenTheMorningComes.mp3`를 기본 공통 배경음악으로 반복 재생합니다.
+로비·스테이지 전환 시 같은 곡은 처음부터 다시 시작하지 않으며 일시정지·볼륨 설정을 따릅니다.
+위 경로에 장면별 음원이 있으면 해당 장면에서는 그것을 우선 사용합니다.
+사용자가 제공한 다른 음원도 위 이름으로 배치할 수 있습니다. BGM이 없으면 무음,
+효과음이 없으면 짧은 생성음을 사용합니다. 오디오 장치가 없어도 게임은 계속 실행됩니다.
+볼륨은 설정에서 BGM·효과음을 따로 조절하고 저장합니다.
+
+**검증과 웹 실행 범위**
+
+자동 테스트 61개로 기존 이동·점프·착지·옆면/머리 충돌·저프레임·낙하 복귀에 더해
+원숭이 예고·탄도·투사체 제한/제거·피격/무적·가시 도약·로프·카메라 충돌·두 코스 도달,
+일시정지·보상 중복 방지·구매·슬롯 교체·저장 복원/손상 복구·리소스 대체·오디오 전환을 검증했습니다.
+30FPS 입력 시뮬레이션으로 실제 장애물을 포함한 두 코스를 연속 클리어하는 통합 테스트도 통과합니다.
+실제 OpenGL 숨김 창에서 외부 아트 없이 **439프레임, 14.62초 클리어, 550메소 지급·저장**을 확인했고,
+로비·상점·설정·플레이·결과 화면 및 실제 GLB 교체·누락 모델 대체의 화면을 확인했습니다.
+사람의 키보드·마우스 직접 플레이 감각과 음원 청음은 검증하지 않았습니다.
+
+```powershell
+# python/에서 실행: 별도 저장 파일을 사용하는 재현 가능한 자동 클리어
+uv run python -m platformer --hidden --autoplay --fps 0 --frames 1500 --save platformer/test-output/check.json --screenshot platformer/test-output/results.png
+# 낮은 실제 렌더 FPS로 플레이 / 외부 리소스 없는 대체 경로
+uv run python -m platformer --play --fps 5
+uv run python -m platformer --resources platformer/test-output/empty-assets
+```
+
+이 게임의 **웹 버전은 구현·검증하지 않았습니다.** 현재 데스크톱 pygame/OpenGL 루프를
+브라우저에서 실행하는 경로는 없습니다. 저장소의 기존 `web/`는 마을 예제입니다.
+웹 게임으로 제공하려면 기존 three.js 트랙에 스테이지 데이터를 JSON으로 공유하고,
+고정 물리·게임 상태·원숭이/투사체·로프·상점/UI를 이식하며, 저장은 localStorage,
+입력은 Pointer Lock, 오디오는 브라우저 재생 허용 흐름으로 연결해야 합니다.
+별도 웹 포팅·브라우저 검증 작업이 필요합니다.
 
 ### three.js 트랙
 
