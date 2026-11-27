@@ -1,6 +1,6 @@
 """Shared collision/visual scene data; no model files or graphics required."""
-from platformer_controller import StaticBox
-from platformer_hazards import MovingHazard
+from .controller import StaticBox
+from .hazards import MovingHazard
 
 SPAWN = (0, 0, 3)
 BOXES = (

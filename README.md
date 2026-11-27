@@ -31,6 +31,22 @@ uv sync          # 처음 한 번: pygame-ce, PyOpenGL, numpy 설치
 uv run main.py
 ```
 
+### 3D 인내의 숲 (플랫폼 게임)
+
+관련 코드·테스트·미리보기 이미지는 `python/platformer/`에 모았습니다.
+Python 트랙의 의존성과 공통 렌더러·카메라를 사용합니다.
+
+```powershell
+cd python
+uv sync
+uv run python -m platformer
+# 자동 테스트
+uv run python -m unittest discover -s platformer -t . -v
+```
+
+WASD 이동, Space 점프, 마우스 시점 회전, Tab 커서 해제·고정, Esc 종료.
+이동·점프·피격 설정은 `platformer/controller.py`, 발판·장애물 배치는 `platformer/level.py`에서 바꿉니다.
+
 ### three.js 트랙
 
 브라우저는 보안 때문에 `file://`로 연 페이지에서 모델 파일을 읽지 못합니다. 그래서 로컬 서버가 필요합니다.

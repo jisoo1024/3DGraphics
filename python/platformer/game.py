@@ -1,6 +1,6 @@
 """3D Forest of Patience: primitive-only platforming scene.
 
-Run: uv run platformer.py (from python/). The original main.py is unchanged.
+Run: uv run python -m platformer (from python/). The original main.py is unchanged.
 """
 import argparse
 
@@ -9,9 +9,9 @@ import pygame
 from OpenGL.GL import *  # noqa: F401,F403 -- same convention as renderer.py
 
 from camera import FollowCamera
-from platformer_controller import MovementSettings, PlatformerController
-from platformer_input import MouseLook
-from platformer_level import BOXES, HAZARDS, SPAWN
+from .controller import MovementSettings, PlatformerController
+from .input import MouseLook
+from .level import BOXES, HAZARDS, SPAWN
 from renderer import Program, Renderer
 from scene import Instance, PlaneModel, srgb_hex_to_linear
 
@@ -205,7 +205,7 @@ def run(args):
           f"y={player.pos[1]:.3f}; hits={player.hit_count}")
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fps", type=int, default=60, help="Render cap; try 5 to test slow frames")
     parser.add_argument("--frames", type=int, default=0, help="Exit after N frames (0: interactive)")

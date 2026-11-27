@@ -1,10 +1,10 @@
-"""Headless behavioral tests: python -m unittest -v test_platformer."""
+"""Headless behavioral tests: python -m unittest -v platformer.test_controller."""
 import unittest
 
 import numpy as np
 
-from platformer_controller import MovementSettings, PlatformerController, StaticBox
-from platformer_level import BOXES
+from .controller import MovementSettings, PlatformerController, StaticBox
+from .level import BOXES
 
 
 FLOOR = StaticBox("floor", (-20, -1, -20), (20, 0, 20))

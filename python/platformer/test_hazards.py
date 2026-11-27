@@ -6,10 +6,10 @@ import numpy as np
 import pygame
 
 from camera import FollowCamera
-from platformer_controller import MovementSettings, PlatformerController, StaticBox
-from platformer_hazards import MovingHazard
-from platformer_input import MouseLook
-from platformer_level import HAZARDS, SPAWN
+from .controller import MovementSettings, PlatformerController, StaticBox
+from .hazards import MovingHazard
+from .input import MouseLook
+from .level import HAZARDS, SPAWN
 
 
 FLOOR = StaticBox("floor", (-20, -1, -20), (20, 0, 20))
